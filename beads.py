@@ -164,7 +164,7 @@ def test():
     lam1 = 5 * amp
     lam2 = 4 * amp
 
-    x, f, cost = beads(y=sig, d=d, fc=fc, r=r, lam0=lam0, lam1=lam1, lam2=lam2)
+    x, cost, f = beads(y=sig, d=d, fc=fc, r=r, lam0=lam0, lam1=lam1, lam2=lam2)
     print(x)
 
 
