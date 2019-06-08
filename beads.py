@@ -177,6 +177,8 @@ def main():
     ax1.plot(sig)
     ax2.plot(x)
     plt.show()
+    x, cost, f = beads(y=sig, d=d, fc=fc, r=r, lam0=lam0, lam1=lam1, lam2=lam2)
+    print(x)
 
 
 if __name__ == '__main__':
