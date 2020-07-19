@@ -7,7 +7,9 @@ INPUT
     d: Filter order (d = 1 or 2)
     fc: Filter cut-off frequency (cycles/sample) (0 < fc < 0.5)
     r: Asymmetry ratio
+    Nit: Number of iteration
     lam0, lam1, lam2: Regularization parameters
+    pen: Penalty function, 'L1_v1' or 'L1_v2'
 
 OUTPUT
     x: Estimated sparse-derivative signal
@@ -29,13 +31,12 @@ Github:
 
 """
 import numpy as np
-from scipy.sparse import spdiags
+from scipy.sparse import spdiags, dia_matrix, vstack
+from scipy.sparse.linalg import spsolve
 
 
-def beads(y, d, fc, r, lam0, lam1, lam2):
+def beads(y, d, fc, r, Nit, lam0, lam1, lam2, pen):
     # The following parameter may be altered.
-    Nit = 3  # Nit: Number of iterations
-    pen = 'L1_v2'  # pen : penalty function for sparse derivative ('L1_v1' or 'L1_v2')
     EPS0 = 1e-6  # cost smoothing parameter for x (small positive value)
     EPS1 = 1e-6  # cost smoothing parameter for derivatives(small positive value)
 
@@ -46,10 +47,8 @@ def beads(y, d, fc, r, lam0, lam1, lam2):
         phi = lambda xx: abs(xx) - EPS1 * np.log(abs(xx) + EPS1)
         wfun = lambda xx: 1. / (abs(xx) + EPS1)
     else:
-        print('penalty must be L1_v1, L1_v2')
-        x, cost, f = [], [], []
-        return x, cost, f
-
+        ValueError('penalty must be L1_v1, L1_v2')
+    
     #  equation (25)
     theta = lambda xx: sum(xx[(xx > EPS0)]) - r * sum(xx[(xx < -EPS0)]) \
                        + sum((1+r)/(4*EPS0) * xx[abs(xx) <= EPS0] ** 2 \
@@ -60,35 +59,37 @@ def beads(y, d, fc, r, lam0, lam1, lam2):
     cost = []
     N = len(y)
     A, B = BAfilt(d, fc, N)
-    H = lambda xx: np.dot(B, (linv(A, xx)))
+    H = lambda xx: B.dot(linv(A, xx))
     e = np.ones((N-1, 1))
-    d1 = spdiags(np.array([-e, e]).squeeze(), np.array([0, 1]), N-1, N)
-    d2 = spdiags(np.array([e, -2*e, e]).squeeze(), np.arange(0, 3), N-2, N)
-    D1, D2 = d1.A, d2.A
+
+    # Here, dia_matrix is temporally converted to numpy array (dense matrix)
+    # because dia_matrix does not support element-wise subsitution.
+    D1 = spdiags(np.array([-e, e]).squeeze(), [0, 1], N-1, N).toarray()
+    D2 = spdiags(np.array([e, -2*e, e]).squeeze(), range(0, 3), N-2, N).toarray()
     D1[-1, -1], D2[-1, -1] = 1., 1.
-    D = np.vstack((D1, D2))
-    BTB = np.dot(np.transpose(B), B)
+    # convert them back to dia_matrix
+    D1, D2 = dia_matrix(D1), dia_matrix(D2)
+    D = vstack([D1, D2]) # scipy.sparse.vstack, not np.vstack
+    BTB = B.transpose().dot(B)
 
     w = np.vstack(([lam1 * np.ones((N-1, 1)), lam2 * np.ones((N-2, 1))]))
     b = (1-r) / 2 * np.ones((N, 1))
-    d = np.dot(BTB, (linv(A, y))) - lam0 * np.dot(np.transpose(A), b)
+    d = BTB.dot(linv(A, y)) - lam0 * A.transpose().dot(b)
 
     gamma = np.ones((N, 1))
 
     for i in range(1, Nit+1):
         print('step: ', i)
-        wf = wfun(np.dot(D, x))
-        wff = w * wf
-        lmda = spdiags(wff.transpose(), 0, 2 * N - 3, 2 * N - 3)
-        Lmda = lmda.A
+        wf = w * wfun(D.dot(x))
+        Lmda = spdiags(wf.transpose(), 0, 2 * N - 3, 2 * N - 3)
 
         k = np.array(abs(x) > EPS0)  # return index 1d
         gamma[~k] = ((1 + r) / 4) / abs(EPS0)
         gamma[k] = ((1 + r) / 4) / abs(x[k])
         Gamma = spdiags(gamma.transpose(), 0, N, N)
 
-        M = 2 * lam0 * Gamma.A + np.dot(np.dot(np.transpose(D), Lmda), D).transpose()
-        x = np.dot(A, np.linalg.solve(BTB + np.dot(np.dot(np.transpose(A), M), A), d))
+        M = 2 * lam0 * Gamma + (D.transpose().dot(Lmda)).dot(D).transpose()
+        x = A.dot(linv(BTB + A.transpose().dot(M.dot(A)), d))
 
         a = y - x
         cost.append(
@@ -100,7 +101,7 @@ def beads(y, d, fc, r, lam0, lam1, lam2):
 
     f = y - x - H(y - x)
 
-    return x, cost, f
+    return x.squeeze(), f.squeeze(), cost
 
 
 def BAfilt(d, fc, N):
@@ -112,6 +113,7 @@ def BAfilt(d, fc, N):
 
      Banded matrices for zero-phase high-pass filter.
      The matrices are 'sparse' data type in MATLAB.
+     In this code, output matrices are scipy.sparse.dia_matrix.
 
      INPUT
        d  : degree of filter is 2d (use d = 1 or 2)
@@ -122,7 +124,6 @@ def BAfilt(d, fc, N):
     b1 = [1, -1]
     for i in range(1, d):
         b1 = np.convolve(a=b1, v=[-1, 2, -1])
-    pass
 
     b = np.convolve(a=b1, v=[-1, 1])
 
@@ -132,19 +133,24 @@ def BAfilt(d, fc, N):
     a = 1
     for i in range(1, d+1):  # for i = 1:d
         a = np.convolve(a=a, v=[1, 2, 1])
-    pass
+    
     a = b + t * a
     xa, xb = (a*np.ones((N, 1))).transpose(), (b*np.ones((N, 1))).transpose()
     dr = np.arange(-d, d+1)
     A = spdiags(xa, dr, N, N)  # A: Symmetric banded matrix
     B = spdiags(xb, dr, N, N)  # B: banded matrix
-    return A.A, B.A
-    pass
+
+    return A, B
 
 
 # left inverse
 def linv(a, b):
-    return np.linalg.solve(a, b)
+    '''
+    a: sparse matrix
+    b: vector
+
+    '''
+    return spsolve(a.tocsc(), b).reshape(len(b), 1)
 
 
 def main():
@@ -170,14 +176,13 @@ def main():
     pen = 'L1_v2'
 
     # then do and plot
-    x, f, cost = beads(y=sig, d=d, fc=fc, r=r, lam0=lam0, lam1=lam1, lam2=lam2)
+    x, f, cost = beads(y=sig, d=d, fc=fc, r=r, Nit=Nit, lam0=lam0, lam1=lam1, lam2=lam2, pen=pen)
     fig = plt.figure()
     ax1 = fig.add_subplot(2, 1, 1)
     ax2 = fig.add_subplot(2, 1, 2)
     ax1.plot(sig)
     ax2.plot(x)
     plt.show()
-    x, cost, f = beads(y=sig, d=d, fc=fc, r=r, lam0=lam0, lam1=lam1, lam2=lam2)
     print(x)
 
 
