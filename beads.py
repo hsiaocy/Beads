@@ -1,41 +1,43 @@
-"""
-
-Baseline estimation and denoising using sparsity (BEADS)
-
-INPUT
-    y: Noisy observation
-    d: Filter order (d = 1 or 2)
-    fc: Filter cut-off frequency (cycles/sample) (0 < fc < 0.5)
-    r: Asymmetry ratio
-    Nit: Number of iteration
-    lam0, lam1, lam2: Regularization parameters
-    pen: Penalty function, 'L1_v1' or 'L1_v2'
-
-OUTPUT
-    x: Estimated sparse-derivative signal
-    f: Estimated baseline
-    cost: Cost function history
-
-Reference:
-    Chromatogram baseline estimation and denoising using sparsity (BEADS)
-    Xiaoran Ning, Ivan W. Selesnick, Laurent Duval
-    Chemometrics and Intelligent Laboratory Systems (2014)
-    doi: 10.1016/j.chemolab.2014.09.014
-    Available online 30 September 2014
-
-Helper:
-    Hisao, Chun-Yi
-
-Github:
-    https://github.com/hsiaocy/Beads
-
-"""
 import numpy as np
 from scipy.sparse import spdiags, dia_matrix, vstack
 from scipy.sparse.linalg import spsolve
 
 
-def beads(y, d, fc, r, Nit, lam0, lam1, lam2, pen):
+def beads(y, d, fc, r, Nit, lam0, lam1, lam2, pen, conv=None):
+    """
+
+    Baseline estimation and denoising using sparsity (BEADS)
+
+    INPUT
+        y: Noisy observation
+        d: Filter order (d = 1 or 2)
+        fc: Filter cut-off frequency (cycles/sample) (0 < fc < 0.5)
+        r: Asymmetry ratio
+        Nit: Number of iteration
+        lam0, lam1, lam2: Regularization parameters
+        pen: Penalty function, 'L1_v1' or 'L1_v2'
+        conv: Smoothing factor for differential matrix D. Must be integer.
+              3 to 5 is recommended.
+
+    OUTPUT
+        x: Estimated sparse-derivative signal
+        f: Estimated baseline
+        cost: Cost function history
+
+    Reference:
+        Chromatogram baseline estimation and denoising using sparsity (BEADS)
+        Xiaoran Ning, Ivan W. Selesnick, Laurent Duval
+        Chemometrics and Intelligent Laboratory Systems (2014)
+        doi: 10.1016/j.chemolab.2014.09.014
+        Available online 30 September 2014
+
+    Helper:
+        Hisao, Chun-Yi
+
+    Github:
+        https://github.com/hsiaocy/Beads
+
+    """
     # The following parameter may be altered.
     EPS0 = 1e-6  # cost smoothing parameter for x (small positive value)
     EPS1 = 1e-6  # cost smoothing parameter for derivatives(small positive value)
@@ -60,16 +62,8 @@ def beads(y, d, fc, r, Nit, lam0, lam1, lam2, pen):
     N = len(y)
     A, B = BAfilt(d, fc, N)
     H = lambda xx: B.dot(linv(A, xx))
-    e = np.ones((N-1, 1))
-
-    # Here, dia_matrix is temporally converted to numpy array (dense matrix)
-    # because dia_matrix does not support element-wise subsitution.
-    D1 = spdiags(np.array([-e, e]).squeeze(), [0, 1], N-1, N).toarray()
-    D2 = spdiags(np.array([e, -2*e, e]).squeeze(), range(0, 3), N-2, N).toarray()
-    D1[-1, -1], D2[-1, -1] = 1., 1.
-    # convert them back to dia_matrix
-    D1, D2 = dia_matrix(D1), dia_matrix(D2)
-    D = vstack([D1, D2]) # scipy.sparse.vstack, not np.vstack
+    D1, D2 = make_diff_matrices(N)
+    D = vstack([D1, D2])  # scipy.sparse.vstack, not np.vstack
     BTB = B.transpose().dot(B)
 
     w = np.vstack(([lam1 * np.ones((N-1, 1)), lam2 * np.ones((N-2, 1))]))
@@ -79,8 +73,12 @@ def beads(y, d, fc, r, Nit, lam0, lam1, lam2, pen):
     gamma = np.ones((N, 1))
 
     for i in range(1, Nit+1):
-        print('step: ', i)
-        wf = w * wfun(D.dot(x))
+        # print('step: ', i)
+        if type(conv) is int:
+            diff = np.convolve(D.dot(x.squeeze()), np.ones(conv)/conv, mode='same')[:, np.newaxis]
+        else:
+            diff = D.dot(x)
+        wf = w * wfun(diff)
         Lmda = spdiags(wf.transpose(), 0, 2 * N - 3, 2 * N - 3)
 
         k = np.array(abs(x) > EPS0)  # return index 1d
@@ -102,7 +100,6 @@ def beads(y, d, fc, r, Nit, lam0, lam1, lam2, pen):
     f = y - x - H(y - x)
 
     return x.squeeze(), f.squeeze(), cost
-
 
 def BAfilt(d, fc, N):
     """
@@ -152,6 +149,15 @@ def linv(a, b):
     '''
     return spsolve(a.tocsc(), b).reshape(len(b), 1)
 
+def make_diff_matrices(N):
+    e = np.ones((N-1, 1))
+    # Here, dia_matrix is temporally converted to numpy array (dense matrix)
+    # because dia_matrix does not support element-wise subsitution.
+    D1 = spdiags(np.array([-e, e]).squeeze(), [0, 1], N-1, N).toarray()
+    D2 = spdiags(np.array([e, -2*e, e]).squeeze(), range(0, 3), N-2, N).toarray()
+    D1[-1, -1], D2[-1, -1] = 1., 1.
+    # convert them back to dia_matrix
+    return dia_matrix(D1), dia_matrix(D2)
 
 def main():
 
